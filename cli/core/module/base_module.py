@@ -186,10 +186,17 @@ class Module(ABC):
             bool,
             Option(
                 "--interactive/--no-interactive",
-                "-i/-n",
                 help="Enable interactive prompting for variables",
             ),
         ] = True,
+        name: Annotated[
+            str | None,
+            Option(
+                "--name",
+                "-n",
+                help="Rename top-level generated files/directories with this name",
+            ),
+        ] = None,
         var: Annotated[
             list[str] | None,
             Option(
@@ -235,6 +242,7 @@ class Module(ABC):
             interactive=interactive,
             var=var,
             var_file=var_file,
+            name=name,
             dry_run=dry_run,
             show_files=show_files,
             quiet=quiet,
