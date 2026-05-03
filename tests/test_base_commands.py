@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cli.core.module.base_commands import GenerationConfig, generate_template, list_templates
+from cli.core.module.base_commands import GenerationConfig, apply_output_name, generate_template, list_templates
 
 
 def _noop(*_args, **_kwargs) -> None:
@@ -76,6 +76,59 @@ def test_list_templates_raw_outputs_tab_separated_rows() -> None:
 
     assert returned_templates == [template]
     assert display.lines == ["whoami\tWhoami\tdocker,test\t1.0.0\tdefault"]
+
+
+def test_apply_output_name_renames_top_level_paths_only() -> None:
+    """Named generation should rename top-level outputs while preserving nested names."""
+    rendered_files = {
+        "files/test.txt": "nested",
+        "main.tf": "main",
+        "dns.tf": "dns",
+    }
+
+    assert apply_output_name(rendered_files, "servertest1") == {
+        "servertest1_files/test.txt": "nested",
+        "servertest1.tf": "main",
+        "servertest1_dns.tf": "dns",
+    }
+
+
+def test_generate_template_applies_output_name_before_writing(monkeypatch, tmp_path) -> None:
+    """Generate should write renamed paths when --name is provided."""
+    display = _DisplayCapture()
+    template = SimpleNamespace(id="terraform", slug="terraform")
+    module_instance = SimpleNamespace(name="terraform", display=display)
+    written: dict[str, object] = {}
+
+    monkeypatch.setattr("cli.core.module.base_commands._prepare_template", lambda *_args, **_kwargs: template)
+    monkeypatch.setattr(
+        "cli.core.module.base_commands._render_template",
+        lambda *_args, **_kwargs: ({"files/test.txt": "nested", "main.tf": "main", "dns.tf": "dns"}, {}),
+    )
+    monkeypatch.setattr("cli.core.module.base_commands.check_output_directory", lambda *_args, **_kwargs: [])
+
+    def capture_write(output_dir, rendered_files):
+        written["output_dir"] = output_dir
+        written["rendered_files"] = rendered_files
+
+    monkeypatch.setattr("cli.core.module.base_commands.write_rendered_files", capture_write)
+
+    generate_template(
+        module_instance,
+        GenerationConfig(
+            id="terraform",
+            output=str(tmp_path),
+            interactive=False,
+            name="servertest1",
+        ),
+    )
+
+    assert written["output_dir"] == tmp_path
+    assert written["rendered_files"] == {
+        "servertest1_files/test.txt": "nested",
+        "servertest1.tf": "main",
+        "servertest1_dns.tf": "dns",
+    }
 
 
 def test_generate_template_dry_run_skips_destination_prompt_and_overwrite_check(

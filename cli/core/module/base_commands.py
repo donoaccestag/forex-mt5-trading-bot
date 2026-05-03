@@ -53,6 +53,7 @@ class GenerationConfig:
     dry_run: bool = False
     show_files: bool = False
     quiet: bool = False
+    name: str | None = None
 
 
 def list_templates(module_instance, raw: bool = False) -> list:
@@ -322,6 +323,53 @@ def execute_remote_dry_run(
     return total_files, size_str
 
 
+def _validate_output_name(name: str) -> str:
+    """Validate and normalize a generated output name."""
+    normalized_name = name.strip()
+    if not normalized_name:
+        raise ValueError("--name cannot be empty")
+    if "/" in normalized_name or "\\" in normalized_name:
+        raise ValueError("--name must be a file name, not a path")
+    if normalized_name in {".", ".."}:
+        raise ValueError("--name cannot be '.' or '..'")
+    return normalized_name
+
+
+def _prefix_path_part(name: str, part: str) -> str:
+    """Prefix one top-level path part with the generated output name."""
+    path = Path(part)
+    if path.stem == "main" and path.suffix:
+        return f"{name}{path.suffix}"
+    return f"{name}_{part}"
+
+
+def apply_output_name(rendered_files: dict[str, str], name: str | None) -> dict[str, str]:
+    """Rename top-level generated paths with a user-provided output name.
+
+    The top-level entrypoint file named ``main.<ext>`` becomes ``<name>.<ext>``.
+    All other top-level files or directories receive ``<name>_`` as a prefix.
+    Nested path segments are preserved unchanged.
+    """
+    if name is None:
+        return rendered_files
+
+    normalized_name = _validate_output_name(name)
+    renamed_files: dict[str, str] = {}
+    for file_path, content in rendered_files.items():
+        path = Path(file_path)
+        parts = path.parts
+        if not parts:
+            continue
+
+        renamed_top_level = _prefix_path_part(normalized_name, parts[0])
+        renamed_path = Path(renamed_top_level, *parts[1:]).as_posix()
+        if renamed_path in renamed_files:
+            raise ValueError(f"--name creates duplicate generated path: {renamed_path}")
+        renamed_files[renamed_path] = content
+
+    return renamed_files
+
+
 def write_rendered_files(output_dir: Path, rendered_files: dict[str, str]) -> None:
     """Write rendered files to the output directory."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -438,6 +486,7 @@ def generate_template(module_instance, config: GenerationConfig) -> None:  # noq
 
     try:
         rendered_files, _variable_values = _render_template(template, config.id, display, config.interactive)
+        rendered_files = apply_output_name(rendered_files, config.name)
 
         if destination is None:
             if config.dry_run:
