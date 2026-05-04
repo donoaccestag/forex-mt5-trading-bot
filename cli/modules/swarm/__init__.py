@@ -6,9 +6,9 @@ from typing import Annotated
 from typer import Argument, Option
 
 from ...core.module import Module
-from ...core.module.base_commands import validate_templates
+from ...core.module.base_commands import ValidationConfig, validate_templates
 from ...core.registry import registry
-from ..compose.validate import run_docker_validation
+from ..compose.validate import ComposeDockerValidator
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ class SwarmModule(Module):
 
     name = "swarm"
     description = "Manage Docker Swarm stack templates"
+    kind_validator_class = ComposeDockerValidator
 
     def validate(  # noqa: PLR0913
         self,
@@ -30,34 +31,64 @@ class SwarmModule(Module):
             str | None,
             Option("--path", help="Path to template directory for validation"),
         ] = None,
+        all_templates: Annotated[
+            bool,
+            Option("--all", help="Validate all Swarm templates (default when no template ID is provided)"),
+        ] = False,
         verbose: Annotated[bool, Option("--verbose", "-v", help="Show detailed validation information")] = False,
         semantic: Annotated[
             bool,
             Option(
                 "--semantic/--no-semantic",
-                help="Enable semantic validation (Docker Compose config, YAML structure, etc.)",
+                help="Enable semantic validation for rendered files",
             ),
         ] = True,
+        matrix: Annotated[
+            bool,
+            Option(
+                "--matrix",
+                help="Validate all reachable dependency states for a single template",
+            ),
+        ] = False,
+        kind: Annotated[
+            bool,
+            Option(
+                "--kind",
+                help="Enable dependency-matrix Docker Compose validation",
+            ),
+        ] = False,
         docker: Annotated[
             bool,
             Option(
                 "--docker/--no-docker",
-                help="Enable Docker Compose validation using 'docker compose config'",
+                help="Alias for --kind Docker Compose validation",
             ),
         ] = False,
         docker_test_all: Annotated[
             bool,
             Option(
                 "--docker-test-all",
-                help="Test all variable combinations (minimal, maximal, each toggle). Requires --docker",
+                help="Alias for --matrix --kind Docker Compose validation. Requires --docker.",
             ),
         ] = False,
     ) -> None:
         """Validate Swarm templates."""
-        validate_templates(self, template_id, path, verbose, semantic)
-
-        if docker and (template_id or path):
-            run_docker_validation(self, template_id, path, docker_test_all, verbose)
+        kind_enabled = kind or docker or docker_test_all
+        matrix_enabled = matrix or docker_test_all
+        kind_validator = self.kind_validator_class(verbose).validate_rendered_files if kind_enabled else None
+        validate_templates(
+            self,
+            template_id,
+            path,
+            ValidationConfig(
+                verbose=verbose,
+                semantic=semantic,
+                matrix=matrix_enabled,
+                kind=kind_enabled,
+                all_templates=all_templates,
+                kind_validator=kind_validator,
+            ),
+        )
 
 
 registry.register(SwarmModule)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from typer import Exit
@@ -17,6 +17,7 @@ from ..exceptions import (
 )
 from ..input import InputManager
 from ..template import Template
+from ..validation import DependencyMatrixBuilder, MatrixOptions, ValidationRunner
 from ..validators import get_validator_registry
 from .generation_destination import (
     GenerationDestination,
@@ -54,6 +55,20 @@ class GenerationConfig:
     show_files: bool = False
     quiet: bool = False
     name: str | None = None
+
+
+@dataclass
+class ValidationConfig:
+    """Configuration for template validation."""
+
+    verbose: bool
+    semantic: bool = True
+    matrix: bool = False
+    kind: bool = False
+    all_templates: bool = False
+    matrix_max_combinations: int = 100
+    kind_validator: object | None = None
+    quiet_success: bool = False
 
 
 def list_templates(module_instance, raw: bool = False) -> list:
@@ -577,17 +592,20 @@ def validate_templates(
     module_instance,
     template_id: str,
     path: str | None,
-    verbose: bool,
-    semantic: bool,
+    config: ValidationConfig,
 ) -> None:
     """Validate templates for Jinja2 syntax, undefined variables, and semantic correctness."""
     # Load template based on input
+    if config.all_templates and (template_id or path):
+        module_instance.display.error("--all cannot be combined with a template ID or --path")
+        raise Exit(code=1) from None
+
     template = _load_template_for_validation(module_instance, template_id, path)
 
     if template:
-        _validate_single_template(module_instance, template, template_id, verbose, semantic)
+        _validate_single_template(module_instance, template, template_id or template.id, config)
     else:
-        _validate_all_templates(module_instance, verbose)
+        _validate_all_templates(module_instance, config)
 
 
 def _load_template_for_validation(module_instance, template_id: str, path: str | None):
@@ -620,21 +638,31 @@ def _load_template_for_validation(module_instance, template_id: str, path: str |
     return None
 
 
-def _validate_single_template(module_instance, template, template_id: str, verbose: bool, semantic: bool) -> None:
+def _validate_single_template(
+    module_instance,
+    template,
+    template_id: str,
+    config: ValidationConfig,
+) -> None:
     """Validate a single template."""
     try:
         # Jinja2 validation
         _ = template.used_variables
         _ = template.variables
-        module_instance.display.success("Jinja2 validation passed")
+        if not config.quiet_success:
+            module_instance.display.success("Jinja2 validation passed")
 
-        # Semantic validation
-        if semantic:
-            _run_semantic_validation(module_instance, template, verbose)
+        if config.matrix or config.kind:
+            _run_matrix_validation(module_instance, template, config)
+            return
+
+        # Semantic validation for the default rendered output.
+        if config.semantic:
+            _run_semantic_validation(module_instance, template, config.verbose)
 
         # Verbose output
-        if verbose:
-            _display_validation_details(module_instance, template, semantic)
+        if config.verbose:
+            _display_validation_details(module_instance, template, config.semantic)
 
     except TemplateRenderError as e:
         module_instance.display.error(str(e), context=f"template '{template_id}'")
@@ -643,13 +671,123 @@ def _validate_single_template(module_instance, template, template_id: str, verbo
         module_instance.display.error(f"Validation failed for '{template_id}':")
         module_instance.display.info(f"\n{e}")
         raise Exit(code=1) from None
+    except Exit:
+        raise
     except Exception as e:
         module_instance.display.error(f"Unexpected error validating '{template_id}': {e}")
         raise Exit(code=1) from None
 
 
+def _run_matrix_validation(
+    module_instance,
+    template,
+    config: ValidationConfig,
+) -> None:
+    """Run dependency matrix validation for one template."""
+    module_instance.display.info("")
+    module_instance.display.info("Running dependency matrix validation...")
+
+    options = MatrixOptions(max_combinations=config.matrix_max_combinations)
+    cases = DependencyMatrixBuilder(template, options).build()
+    runner = ValidationRunner(
+        template,
+        cases,
+        semantic=config.semantic,
+        kind_validator=config.kind_validator,
+    )
+    summary = runner.run()
+
+    module_instance.display.data_table(
+        columns=[
+            {"name": "Case", "style": "cyan", "no_wrap": False},
+            {"name": "Tpl", "justify": "center"},
+            {"name": "Sem", "justify": "center"},
+            {"name": "Kind", "justify": "center"},
+        ],
+        rows=_build_matrix_result_rows(
+            cases,
+            summary.failures,
+            kind_requested=config.kind,
+            kind_available=config.kind_validator is not None,
+            kind_skipped_cases=summary.kind_skipped_cases,
+        ),
+        title=f"Dependency Matrix ({len(cases)} cases)",
+    )
+
+    if config.kind and config.kind_validator is None:
+        module_instance.display.warning(f"No kind-specific validator available for '{module_instance.name}'")
+    elif summary.kind_skipped_cases:
+        module_instance.display.warning("Kind-specific validation skipped for one or more cases")
+
+    if summary.failures:
+        module_instance.display.info("")
+        for failure in summary.failures:
+            location = f" [{failure.file_path}]" if failure.file_path else ""
+            validator = f" ({failure.validator})" if failure.validator else ""
+            module_instance.display.error(
+                f"{failure.case_name}: {failure.stage}{location}{validator}: {failure.message}"
+            )
+        raise Exit(code=1) from None
+
+    module_instance.display.success(f"Dependency matrix validation passed ({summary.total_cases} case(s))")
+
+
+def _build_matrix_result_rows(
+    cases,
+    failures,
+    kind_requested: bool,
+    kind_available: bool,
+    kind_skipped_cases: set[str],
+) -> list[tuple[str, str, str, str]]:
+    """Build display rows for matrix validation results."""
+    failures_by_case: dict[str, dict[str, set[str]]] = {}
+    for failure in failures:
+        case_failures = failures_by_case.setdefault(failure.case_name, {})
+        case_failures.setdefault(failure.stage, set()).add(failure.message)
+
+    rows = []
+    for case in cases:
+        failed_stages = failures_by_case.get(case.name, {})
+        rows.append(
+            (
+                case.name,
+                "fail" if "tpl" in failed_stages else "pass",
+                "fail" if "sem" in failed_stages else "pass",
+                _matrix_stage_status(
+                    failed_stages,
+                    "kind",
+                    requested=kind_requested,
+                    available=kind_available,
+                    skipped=case.name in kind_skipped_cases,
+                ),
+            )
+        )
+    return rows
+
+
+def _matrix_stage_status(
+    failed_stages: dict[str, set[str]],
+    stage: str,
+    *,
+    requested: bool = True,
+    available: bool = True,
+    skipped: bool = False,
+) -> str:
+    if not requested:
+        return "skip"
+    if not available:
+        return "missing"
+    if any("not available" in message or "unavailable" in message for message in failed_stages.get(stage, set())):
+        return "missing"
+    if stage in failed_stages:
+        return "fail"
+    if skipped:
+        return "skip"
+    return "pass"
+
+
 def _run_semantic_validation(module_instance, template, verbose: bool) -> None:
-    """Run semantic validation on rendered template files."""
+    """Run semantic validation on the default rendered template files."""
     module_instance.display.info("")
     module_instance.display.info("Running semantic validation...")
 
@@ -685,7 +823,7 @@ def _display_validation_details(module_instance, template, semantic: bool) -> No
         module_instance.display.info(f"Generated {len(rendered_files)} files")
 
 
-def _validate_all_templates(module_instance, verbose: bool) -> None:
+def _validate_all_templates(module_instance, config: ValidationConfig) -> None:
     """Validate all templates in the module."""
     module_instance.display.info(f"Validating all {module_instance.name} templates...")
 
@@ -695,23 +833,35 @@ def _validate_all_templates(module_instance, verbose: bool) -> None:
 
     all_templates = module_instance._load_all_templates()
     total = len(all_templates)
+    # Preserve historical all-template validation behavior: by default this
+    # checks template syntax/variables only. Matrix or kind validation can be
+    # explicitly enabled for all templates with --matrix/--kind.
+    child_config = replace(
+        config,
+        semantic=config.semantic if config.matrix or config.kind else False,
+        quiet_success=not config.verbose,
+    )
 
     for template in all_templates:
         try:
-            _ = template.used_variables
-            _ = template.variables
+            _validate_single_template(module_instance, template, template.id, child_config)
             valid_count += 1
-            if verbose:
+            if config.verbose:
                 module_instance.display.success(template.id)
+        except Exit:
+            invalid_count += 1
+            errors.append((template.id, "Validation failed"))
+            if config.verbose:
+                module_instance.display.error(template.id)
         except ValueError as e:
             invalid_count += 1
             errors.append((template.id, str(e)))
-            if verbose:
+            if config.verbose:
                 module_instance.display.error(template.id)
         except Exception as e:
             invalid_count += 1
             errors.append((template.id, f"Load error: {e}"))
-            if verbose:
+            if config.verbose:
                 module_instance.display.warning(template.id)
 
     # Display summary
