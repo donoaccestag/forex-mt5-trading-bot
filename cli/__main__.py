@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from typer import Option, Typer
+from typer import Context, Option, Typer
 from typer.core import TyperGroup
 
 import cli.modules
@@ -79,6 +79,7 @@ def setup_logging(log_level: str = "WARNING") -> None:
 
 @app.callback(invoke_without_command=True)
 def main(
+    ctx: Context,
     _version: bool | None = Option(
         None,
         "--version",
@@ -103,9 +104,6 @@ def main(
     else:
         # Silence all logging (including third-party) unless user explicitly requests it
         logging.disable(logging.CRITICAL)
-
-    # Get context without type annotation (compatible with all Typer versions)
-    ctx = click.get_current_context()
 
     # Store log level in context for potential use by other commands
     ctx.ensure_object(dict)
