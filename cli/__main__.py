@@ -14,7 +14,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from typer import Option, Typer, Context
+from typer import Context, Option, Typer
 from typer.core import TyperGroup
 
 import cli.modules
@@ -238,7 +238,6 @@ def run() -> None:
                 setup_logging(log_level)
         except (ValueError, IndexError):
             pass  # Let Typer handle argument parsing errors
-
 
     try:
         init_app()
