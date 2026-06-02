@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Ansible templates can now contain literal downstream Jinja expressions like `{{ variable }}` without boilerplate validation treating them as undeclared variables (#1775)
+- Pipx installs now include the required `click` dependency and CLI startup no longer fails with missing or inactive click contexts (#1795, #1797, #1796)
 
 ## [0.2.0-2] - 2026-04-23
 
