@@ -1,136 +1,60 @@
-![Welcome](./.assets/banner.jpg)
+# Forex Trading Bot
 
-Create reusable templates and turn them into configurable workloads for homelabs and self-hosted infrastructure. *Free and Open-Source.*
+## About The Program
 
-## How it works
+This program is a forex trading bot that works on the popular trading platform, MetaTrader 5. It is implemented in TypeScript under `src/`.
 
-Create reusable templates for infrastructure expertise like Docker, Kubernetes, Terraform, Ansible, static files, Python, and more. Use the built-in *Jinja2-like* templating syntax with `<< >>` variables, `<% %>` blocks, and `<# #>` comments to keep configuration modular and conditional. Sync with Git in both directions or manage everything locally. Render templates, configure variables through a guided wizard, and wire up secrets. Copy them to remote servers and environments or any local directory.
+The bot employs a variation of a SuperTrend strategy (18 periods, multiplicative factor of 5). Buy when the previous candle low is at or below the down-trend line and the current open is below the average line; sell when the previous high is at or above the up-trend line and the current open is above the average line.
 
-✨ Explore 100+ template presets for homelabs and self-hosted infrastructure: https://github.com/ChristianLempa/boilerplates-library
+## TypeScript Project Structure
 
-## Boilerplates CLI
+| Path | Role |
+| --- | --- |
+| `src/index.ts` | Main program loop |
+| `src/dataProcessing.ts` | SuperTrend indicator (ATR implemented in TypeScript) |
+| `src/orderProcessing.ts` | Order execution with **Kelly stake sizing** via [`stake-math`](https://www.npmjs.com/package/stake-math) |
+| `src/timeProcessing.ts` | Market hours, candle timing, MT5 timeframe mapping |
+| `src/config/symbols.ts` | 26 forex pairs and timeframes |
+| `src/config/kelly.ts` | Kelly parameters (win probability, fraction, caps) |
+| `src/mt5/` | Typed MT5 client |
+| `scripts/mt5-bridge.py` | Thin Python RPC bridge to the official `MetaTrader5` package |
 
-The Boilerplates CLI is the main interface for working with template libraries locally. It lets you discover available templates, inspect their metadata and variables, validate them, and generate ready-to-use files.
+### Kelly Stake Sizing
 
-It combines template-defined variables and defaults, guided interactive prompts, CLI variable overrides, and git-backed template libraries into one workflow. In practice, that means you can keep reusable boilerplates in a repository and turn them into concrete, environment-specific configurations with a single command.
+Lot size is computed with `computeKellyStake`, `formatStakeUsd`, and `roundStake` from **stake-math** (pinned to `3.3.0` in the 3.x line; npm does not publish `3.0.0`).
 
-⚠️ Boilerplates `0.2.0` introduced the new template format. Legacy `template.yaml` / `template.yml` manifests and `.j2` template files are no longer supported.
+Forex risk/reward is mapped into stake-math’s binary-market inputs:
 
-ℹ️ New templates must use `template.json`, keep renderable content under `files/`, and use the custom *Jinja2*-like delimiters `<< >>`, `<% %>`, and `<# #>` instead of default *Jinja2* syntax.
+- `bankroll` — account balance  
+- `probability` — estimated win rate (`KELLY_WIN_PROBABILITY` in `src/config/kelly.ts`)  
+- `allInPrice` — risk share of total move: `|entry − sl| / (|entry − sl| + |tp − entry|)`  
+- `kellyFraction` — fractional Kelly (default half-Kelly at `0.5`)
 
-### Template kinds
+The returned USD stake is converted to lots using symbol tick size/value. The original “double lot when closer to average line” rule is preserved.
 
-Use a dedicated kind when the template's primary output matches that technology. Use `python` for Python-oriented project scaffolds, automation helpers, packages, and service/tooling skeletons. Use `bash` for Bash-oriented scripts, bootstrap flows, maintenance tasks, and automation snippets. Keep Python or Bash files inside another kind, such as `compose` or `terraform`, when they are only supporting files for that primary infrastructure template.
+## Prerequisites
 
-Initial `python` and `bash` validation is intentionally minimal: the CLI validates template syntax, declared variables, rendering, and generic semantic checks where applicable. Language-specific validation such as Python compilation, shell syntax checks, formatting, or test execution can be added as follow-up work once template conventions are established.
+- **Node.js 18+**
+- **MetaTrader 5** terminal ([download](https://www.metatrader5.com/en/download))
+- **Python 3** with the official package: `pip install MetaTrader5`
 
-### Installation
-
-#### Automated installer script
-
-Install the Boilerplates CLI using the automated installer:
-
-```bash
-# Install latest version
-curl -fsSL https://raw.githubusercontent.com/christianlempa/boilerplates/main/scripts/install.sh | bash
-
-# Install specific version
-curl -fsSL https://raw.githubusercontent.com/christianlempa/boilerplates/main/scripts/install.sh | bash -s -- --version v1.2.3
-```
-
-The installer uses `pipx` to create an isolated environment for the CLI tool. Once installed, the `boilerplates` command will be available in your terminal.
-
-#### Nixos
-
-If you are using nix flakes
+## Running (TypeScript)
 
 ```bash
-# Run without installing
-nix run github:christianlempa/boilerplates -- --help
-
-# Install to your profile
-nix profile install github:christianlempa/boilerplates
-
-# Or directly in your flake
-{
-  inputs.boilerplates.url = "github:christianlempa/boilerplates";
-
-  outputs = { self, nixpkgs, boilerplates }: {
-    # Use boilerplates.packages.${system}.default
-  };
-}
-
-# Use in a temporary shell
-nix shell github:christianlempa/boilerplates
+npm install
+npm run build
+npm start
 ```
 
-### Quick Start
+Development (no build step):
 
 ```bash
-# Explore
-boilerplates --help
-
-# Update Repository Library
-boilerplates repo update
-
-# List all available templates for a Docker Compose stack
-boilerplates compose list
-
-# List technology-agnostic static file templates
-boilerplates static list
-
-# Show details about a specific template
-boilerplates compose show nginx
-
-# Generate a template (interactive mode)
-boilerplates compose generate authentik
-
-# Generate with custom output directory
-boilerplates compose generate nginx --output my-nginx-server
-
-# Non-interactive mode with variable overrides
-boilerplates compose generate traefik --output my-proxy \
-  --var service_name=traefik \
-  --var traefik_enabled=true \
-  --var traefik_host=proxy.example.com \
-  --no-interactive
+npm install
+npm run dev
 ```
 
-### Managing Defaults
+You will be prompted for MT5 account number, password, and server name. Track orders in the MetaTrader 5 terminal. Use a **demo account** for testing.
 
-Save time by setting default values for variables you use frequently:
+## Disclaimer
 
-```bash
-# Set a default value
-boilerplates compose defaults set container_timezone="America/New_York"
-boilerplates compose defaults set restart_policy="unless-stopped"
-
-```
-
-### Template Libraries
-
-Boilerplates uses git-based libraries to manage templates. You can add custom repositories:
-
-```bash
-# List configured libraries
-boilerplates repo list
-
-# Update all libraries
-boilerplates repo update
-
-# Add a custom library
-boilerplates repo add my-templates https://github.com/user/templates \
-  --directory library \
-  --branch main
-
-# Remove a library
-boilerplates repo remove my-templates
-```
-
-## Contribution
-
-Contributions are welcome. Feel free to open an issue or submit a pull request!
-
-## License
-
-This repository is licensed under the [MIT License](./LICENSE).
+This strategy is not guaranteed to be profitable. Exhaustive backtesting is required before live use. Intended as a sample of algorithmic trading work — use on demo accounts only.

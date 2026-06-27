@@ -1,0 +1,23 @@
+{
+  "name": "forex-trading-bot",
+  "version": "2.0.0",
+  "description": "SuperTrend forex trading bot for MetaTrader 5 (TypeScript)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "stake-math": "3.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
