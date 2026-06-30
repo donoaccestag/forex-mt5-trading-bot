@@ -1,4 +1,4 @@
-# 📈 Forex MT5 Trading Bot
+# Forex MT5 Trading Bot
 
 > A production-style TypeScript trading bot for MetaTrader 5 featuring SuperTrend-based entries, Kelly stake sizing, and robust risk management.
 
@@ -13,7 +13,7 @@
 
 ---
 
-## Why Open Source?
+## Overview?
 
 | Path | Role |
 | --- | --- |
