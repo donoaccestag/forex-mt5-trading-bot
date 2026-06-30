@@ -13,9 +13,8 @@
 
 ---
 
-<<<<<<< HEAD
 ## Why Open Source?
-=======
+
 | Path | Role |
 | --- | --- |
 | `src/index.ts` | Main program loop |
