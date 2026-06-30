@@ -13,7 +13,7 @@
 
 ---
 
-## Overview?
+## Overview
 
 | Path | Role |
 | --- | --- |
