@@ -12,6 +12,9 @@ import {
   CONFIRMATION_CANDLES,
   MIN_ATR,
   MIN_BODY_TO_RANGE,
+  MAX_OPEN_TRADES,
+  MAX_DAILY_DRAWDOWN_FRACTION,
+  CIRCUIT_BREAKER_COOLDOWN_MS,
 } from './config/risk.js';
 import {
   candleRetrievedFlag,
@@ -19,6 +22,12 @@ import {
   marketIsOpen,
   newCandleUpdate,
 } from './timeProcessing.js';
+import {
+  setDailyStartBalanceIfMissing,
+  getDailyStartBalance,
+  isCircuitOpen,
+  setCircuitOpen,
+} from './logging.js';
 
 async function promptCredentials(): Promise<{ account: number; password: string; server: string }> {
   const rl = createInterface({ input, output });
@@ -73,10 +82,25 @@ async function runTradingLoop(symbols: SymbolConfig[]): Promise<void> {
 
     try {
       const account = await mt5.accountInfo();
-      if (account) dashboard.updateAccount(account);
+      if (account) {
+        dashboard.updateAccount(account);
+        try {
+          setDailyStartBalanceIfMissing(account.balance);
+        } catch {}
+        const start = getDailyStartBalance();
+        if (start && account.balance < start * (1 - MAX_DAILY_DRAWDOWN_FRACTION)) {
+          setCircuitOpen(CIRCUIT_BREAKER_COOLDOWN_MS, { reason: 'daily_drawdown' });
+          logEvent('circuit_opened', { reason: 'daily_drawdown', start, balance: account.balance });
+          dashboard.logError('Daily drawdown exceeded; circuit opened.');
+        }
+      }
     } catch (err) {
       dashboard.logError(`account fetch error: ${String(err)}`);
     }
+
+    // compute total open positions once per loop
+    const positionsArr = await Promise.all(symbols.map((s) => mt5.positionsGet(s.symbol).catch(() => [])));
+    let totalOpen = positionsArr.reduce((acc, p) => acc + (p?.length || 0), 0);
 
     for (const symbolConfig of symbols) {
       const timeframe = getMt5Interval(symbolConfig.timeframe);
@@ -137,12 +161,25 @@ async function runTradingLoop(symbols: SymbolConfig[]): Promise<void> {
         if ((pending.type === 'buy' && buyCondition) || (pending.type === 'sell' && sellCondition)) {
           if (pending.candlesWaited >= CONFIRMATION_CANDLES) {
             logEvent('signal_confirmed', { symbol: symbolConfig.symbol, pending });
-            if (pending.type === 'buy') {
-              await executeBuyOrder(mt5, symbolConfig.symbol, pending.entry, pending.minVal ?? 0, pending.avgVal);
+            // Check circuit and global open-trades before executing
+            const circuit = isCircuitOpen();
+            if (circuit.open) {
+              logEvent('signal_blocked_by_circuit', { symbol: symbolConfig.symbol, until: circuit.until });
+              dashboard.logError(`Signal blocked by circuit until ${new Date(circuit.until ?? 0).toISOString()}`);
+              pendingSignals.delete(symbolConfig.symbol);
+            } else if (totalOpen >= MAX_OPEN_TRADES) {
+              logEvent('signal_blocked_by_open_trades', { symbol: symbolConfig.symbol, totalOpen, max: MAX_OPEN_TRADES });
+              dashboard.logError(`Skipping execution; open trades ${totalOpen} >= ${MAX_OPEN_TRADES}`);
+              pendingSignals.delete(symbolConfig.symbol);
             } else {
-              await executeSellOrder(mt5, symbolConfig.symbol, pending.entry, pending.maxVal ?? 0, pending.avgVal);
+              if (pending.type === 'buy') {
+                await executeBuyOrder(mt5, symbolConfig.symbol, pending.entry, pending.minVal ?? 0, pending.avgVal);
+              } else {
+                await executeSellOrder(mt5, symbolConfig.symbol, pending.entry, pending.maxVal ?? 0, pending.avgVal);
+              }
+              totalOpen += 1;
+              pendingSignals.delete(symbolConfig.symbol);
             }
-            pendingSignals.delete(symbolConfig.symbol);
           }
         } else {
           logEvent('signal_cancelled', { symbol: symbolConfig.symbol, pending });

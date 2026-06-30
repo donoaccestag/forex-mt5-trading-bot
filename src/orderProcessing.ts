@@ -5,7 +5,7 @@ import {
   MAX_BANKROLL_FRACTION,
   RISK_REWARD_RATIO,
 } from './config/kelly.js';
-import { logEvent, hasExecuted, markExecuted } from './logging.js';
+import { logEvent, hasExecuted, markExecuted, recordFailure, resetFailures, isCircuitOpen } from './logging.js';
 import { MAX_LOSS_PER_TRADE_FRACTION } from './config/risk.js';
 import type { Mt5Client, SymbolInfo, TradeRequest } from './mt5/types.js';
 import {
@@ -179,6 +179,13 @@ async function sendWithRetries(
     return;
   }
 
+  const circuit = isCircuitOpen();
+  if (circuit.open) {
+    logEvent('circuit_open_skip', { symbol, side, until: circuit.until });
+    console.log(`Circuit open until ${new Date(circuit.until ?? 0).toISOString()}; skipping orders.`);
+    return;
+  }
+
   let order = await mt5.orderSend(request);
 
   if (order.retcode === TRADE_RETCODE_REQUOTE) {
@@ -193,6 +200,9 @@ async function sendWithRetries(
         console.log(`\n${side} order was executed successfully for ${symbol}, position_id=#${order.order}`);
         logEvent('order_filled', { symbol, side, order: order.order, signature });
         markExecuted(signature, { order: order.order, retcode: order.retcode });
+        try {
+          resetFailures();
+        } catch {}
         return;
       }
     }
@@ -213,12 +223,22 @@ async function sendWithRetries(
         console.log(`${side} order was executed successfully, position_id=#${order.order}`);
         logEvent('order_filled', { symbol, side, order: order.order, signature });
         markExecuted(signature, { order: order.order, retcode: order.retcode });
+        try {
+          resetFailures();
+        } catch {}
         return;
       }
     }
     if (order.retcode === 10015 || order.retcode === 10016) {
       console.log(`${side} order for symbol ${symbol} was not processed successfully, retcode=${order.retcode}`);
       logEvent('order_failed', { symbol, side, retcode: order.retcode, signature });
+      try {
+        const r = recordFailure(symbol, { retcode: order.retcode });
+        if (r.opened) {
+          logEvent('circuit_opened', { reason: 'repeated_order_failures', failures: r.failures });
+          console.log('Circuit breaker opened due to repeated failures.');
+        }
+      } catch {}
       console.log('Processing the next symbol...');
     }
     return;
@@ -227,9 +247,15 @@ async function sendWithRetries(
   console.log(`\n${side} order for ${symbol} was executed but failed, retcode=${order.retcode}`);
   console.log(`Request Details:\n ${JSON.stringify(request, null, 2)}\n`);
   logEvent('order_failed', { symbol, side, retcode: order.retcode, request, signature });
-  console.log('Shutting down the program...');
-  await mt5.shutdown();
-  process.exit(1);
+  try {
+    const r = recordFailure(symbol, { retcode: order.retcode, request });
+    if (r.opened) {
+      logEvent('circuit_opened', { reason: 'repeated_order_failures', failures: r.failures });
+      console.log('Circuit breaker opened due to repeated failures.');
+    }
+  } catch {}
+  // Do not kill the process automatically; allow circuit-breaker to pause new entries.
+  return;
 }
 
 export async function executeBuyOrder(
