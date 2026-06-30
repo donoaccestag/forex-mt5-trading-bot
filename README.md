@@ -19,13 +19,24 @@ This project is a rule-based forex trading bot for MetaTrader 5, implemented in 
 | Path | Role |
 | --- | --- |
 | `src/index.ts` | Main program loop |
-| `src/dataProcessing.ts` | Indicator logic and ATR handling |
-| `src/orderProcessing.ts` | Order execution and execution safety |
-| `src/errorHandling.ts` | Guarded async execution, retry logic, trace IDs |
-| `src/logging.ts` | Structured event and circuit-breaker state |
-| `src/ui/dashboard.ts` | Terminal dashboard |
-| `src/config/` | Strategy and risk parameters |
-| `scripts/mt5-bridge.py` | MetaTrader 5 Python bridge |
+| `src/dataProcessing.ts` | SuperTrend indicator (ATR implemented in TypeScript) |
+| `src/orderProcessing.ts` | Order execution with **Kelly stake sizing** via [`stake-math`](https://www.npmjs.com/package/stake-math) |
+| `src/timeProcessing.ts` | Market hours, candle timing, MT5 timeframe mapping |
+| `src/config/symbols.ts` | 26 forex pairs and timeframes |
+| `src/config/kelly.ts` | Kelly parameters (win probability, fraction, caps) |
+| `src/mt5/` | Typed MT5 client |
+| `scripts/mt5-bridge.py` | Thin Python RPC bridge to the official `MetaTrader5` package |
+
+### Kelly Stake Sizing
+
+Forex risk/reward is mapped into stake-math’s binary-market inputs:
+
+- `bankroll` — account balance  
+- `probability` — estimated win rate (`KELLY_WIN_PROBABILITY` in `src/config/kelly.ts`)  
+- `allInPrice` — risk share of total move: `|entry − sl| / (|entry − sl| + |tp − entry|)`  
+- `kellyFraction` — fractional Kelly (default half-Kelly at `0.5`)
+
+The returned USD stake is converted to lots using symbol tick size/value. The original “double lot when closer to average line” rule is preserved.
 
 ## Prerequisites
 
