@@ -7,6 +7,7 @@ import {
 } from './config/kelly.js';
 import { logEvent, hasExecuted, markExecuted, recordFailure, resetFailures, isCircuitOpen } from './logging.js';
 import { MAX_LOSS_PER_TRADE_FRACTION } from './config/risk.js';
+import { AppError, createTraceId, getErrorMessage, runGuarded } from './errorHandling.js';
 import type { Mt5Client, SymbolInfo, TradeRequest } from './mt5/types.js';
 import {
   ORDER_FILLING_FOK,
@@ -172,21 +173,29 @@ async function sendWithRetries(
     return;
   }
 
+  const traceId = createTraceId(`${symbol.toLowerCase()}-order`);
   const signature = `${symbol}-${side}-${request.type}-${Number(request.price ?? 0)}-${Number(request.sl ?? 0)}-${Number(request.tp ?? 0)}-${Number(request.volume ?? 0)}`;
   if (hasExecuted(signature)) {
-    logEvent('order_skipped_duplicate', { symbol, side, signature });
+    logEvent('order_skipped_duplicate', { symbol, side, signature, traceId });
     console.log(`Skipping duplicate ${side} for ${symbol}`);
     return;
   }
 
   const circuit = isCircuitOpen();
   if (circuit.open) {
-    logEvent('circuit_open_skip', { symbol, side, until: circuit.until });
+    logEvent('circuit_open_skip', { symbol, side, until: circuit.until, traceId });
     console.log(`Circuit open until ${new Date(circuit.until ?? 0).toISOString()}; skipping orders.`);
     return;
   }
 
-  let order = await mt5.orderSend(request);
+  const orderResult = await runGuarded('orderSend', () => mt5.orderSend(request), { traceId, retries: 2 });
+  if (!orderResult.ok || !orderResult.data) {
+    const message = getErrorMessage(orderResult.error);
+    logEvent('order_failed', { symbol, side, retcode: null, error: message, signature, traceId });
+    throw new AppError(message, { code: 'ORDER_SEND_FAILED', recoverable: true, traceId });
+  }
+
+  let order = orderResult.data;
 
   if (order.retcode === TRADE_RETCODE_REQUOTE) {
     console.log('\nRequote required! Trying again...');
@@ -195,10 +204,14 @@ async function sendWithRetries(
       if (!request) {
         break;
       }
-      order = await mt5.orderSend(request);
+      const retryResult = await runGuarded('orderSend(requote)', () => mt5.orderSend(request), { traceId, retries: 2 });
+      if (!retryResult.ok || !retryResult.data) {
+        break;
+      }
+      order = retryResult.data;
       if (order.retcode === TRADE_RETCODE_DONE) {
         console.log(`\n${side} order was executed successfully for ${symbol}, position_id=#${order.order}`);
-        logEvent('order_filled', { symbol, side, order: order.order, signature });
+        logEvent('order_filled', { symbol, side, order: order.order, signature, traceId });
         markExecuted(signature, { order: order.order, retcode: order.retcode });
         try {
           resetFailures();
@@ -218,10 +231,14 @@ async function sendWithRetries(
       if (!request) {
         break;
       }
-      order = await mt5.orderSend(request);
+      const retryResult = await runGuarded('orderSend(invalid-price)', () => mt5.orderSend(request), { traceId, retries: 2 });
+      if (!retryResult.ok || !retryResult.data) {
+        break;
+      }
+      order = retryResult.data;
       if (order.retcode === TRADE_RETCODE_DONE) {
         console.log(`${side} order was executed successfully, position_id=#${order.order}`);
-        logEvent('order_filled', { symbol, side, order: order.order, signature });
+        logEvent('order_filled', { symbol, side, order: order.order, signature, traceId });
         markExecuted(signature, { order: order.order, retcode: order.retcode });
         try {
           resetFailures();
